@@ -1,0 +1,153 @@
+{
+  "name": "Supply Chain Risk Watch",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Toutes les 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-800, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://news.google.com/rss/search?q=port+strike+OR+supply+chain+disruption+OR+factory+shutdown&hl=en"
+      },
+      "id": "rss-read",
+      "name": "Lire le flux RSS actualites",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [-560, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplique les articles deja traites (par lien) et ne garde que les 15 plus recents\nconst seen = new Set($getWorkflowStaticData('global').seenLinks || []);\nconst fresh = items.filter(item => !seen.has(item.json.link));\nfresh.forEach(item => seen.add(item.json.link));\n$getWorkflowStaticData('global').seenLinks = Array.from(seen).slice(-500);\nreturn fresh.slice(0, 15);"
+      },
+      "id": "dedupe-filter",
+      "name": "Filtrer les nouveaux articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-320, 0]
+    },
+    {
+      "parameters": {
+        "modelId": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Tu es un analyste risque supply chain. Pour l'article fourni, reponds en JSON strict avec les champs: is_supply_chain_risk (bool), risk_type (greve_portuaire, catastrophe_naturelle, tension_geopolitique, penurie, autre), severity (faible, moyenne, elevee), region, summary (2 phrases max, en francais)."
+            },
+            {
+              "role": "user",
+              "content": "Titre: {{$json.title}}\nExtrait: {{$json.contentSnippet}}\nLien: {{$json.link}}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "llm-classify",
+      "name": "Classifier le risque (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.5,
+      "position": [-80, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_supply_chain_risk}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "is-risk-filter",
+      "name": "Est un risque pertinent ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [160, 0]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "REPLACE_WITH_GOOGLE_SHEET_ID",
+        "range": "Risques!A:F",
+        "options": {}
+      },
+      "id": "log-to-sheet",
+      "name": "Enregistrer dans le tableau de bord",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [420, -80]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.severity}}",
+              "value2": "elevee"
+            }
+          ]
+        }
+      },
+      "id": "high-severity-filter",
+      "name": "Severite elevee ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [420, 80]
+    },
+    {
+      "parameters": {
+        "channel": "#supply-chain-alerts",
+        "text": "=Nouveau risque supply chain detecte\nType: {{$json.risk_type}}\nRegion: {{$json.region}}\nSeverite: {{$json.severity}}\nResume: {{$json.summary}}\nSource: {{$json.link}}"
+      },
+      "id": "slack-alert",
+      "name": "Alerter Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [660, 80]
+    }
+  ],
+  "connections": {
+    "Toutes les 6h": {
+      "main": [[{ "node": "Lire le flux RSS actualites", "type": "main", "index": 0 }]]
+    },
+    "Lire le flux RSS actualites": {
+      "main": [[{ "node": "Filtrer les nouveaux articles", "type": "main", "index": 0 }]]
+    },
+    "Filtrer les nouveaux articles": {
+      "main": [[{ "node": "Classifier le risque (LLM)", "type": "main", "index": 0 }]]
+    },
+    "Classifier le risque (LLM)": {
+      "main": [[{ "node": "Est un risque pertinent ?", "type": "main", "index": 0 }]]
+    },
+    "Est un risque pertinent ?": {
+      "main": [
+        [
+          { "node": "Enregistrer dans le tableau de bord", "type": "main", "index": 0 },
+          { "node": "Severite elevee ?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Severite elevee ?": {
+      "main": [[{ "node": "Alerter Slack", "type": "main", "index": 0 }]]
+    }
+  },
+  "meta": {
+    "instanceId": "supply-chain-risk-watch"
+  }
+}
